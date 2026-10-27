@@ -1,0 +1,121 @@
+import { useState, useEffect } from 'react';
+import { Calendar, RefreshCcw, Search, ChevronDown, X, PieChart as PieChartIcon, FileText, ShoppingBag, CreditCard, Inbox, History, Building, Check } from 'lucide-react';
+import { api } from '../../services/api';
+import type { Branch } from '../../services/api';
+import DateFilterModal, { formatDateRangeDisplay, getInitialDateRange } from '../../components/common/DateFilterModal';
+import { PieChart, Pie, Cell, ResponsiveContainer, Legend, Tooltip } from 'recharts';
+import Pagination from '../../components/common/Pagination';
+import EmptyState from '../../components/common/EmptyState';
+import { useBranchSync } from '../../hooks/useBranchSync';
+
+type SalesTab = 'penjualan-harian' | 'layanan' | 'kelas' | 'faktur' | 'voucher' | 'laci-kas' | 'kas-masuk-keluar';
+
+const tabs: { id: SalesTab; label: string }[] = [
+    { id: 'penjualan-harian', label: 'Penjualan Harian' },
+    { id: 'layanan', label: 'Layanan' },
+    // { id: 'kelas', label: 'Kelas' }, // Hidden for now if unused
+    { id: 'faktur', label: 'Faktur' },
+    { id: 'voucher', label: 'Voucher' },
+    { id: 'laci-kas', label: 'Laci Kas' },
+    { id: 'kas-masuk-keluar', label: 'Kas Masuk/Keluar' },
+];
+
+const formatCurrency = (value: number) => new Intl.NumberFormat('id-ID', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(value);
+const formatDateDisplay = (date: Date) => date.toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric' });
+const formatDateInput = (date: Date) => {
+    const y = date.getFullYear();
+    const m = (date.getMonth() + 1).toString().padStart(2, '0');
+    const d = date.getDate().toString().padStart(2, '0');
+    return `${y}-${m}-${d}`;
+};
+
+// API Integration
+const fetchReportData = async (
+    tab: SalesTab,
+    dateFrom: Date,
+    dateTo: Date,
+    branchId: number | null
+) => {
+    // Format dates to YYYY-MM-DD
+    const formatDate = (d: Date) => d.toISOString().split('T')[0];
+    const params = {
+        date_from: formatDate(dateFrom),
+        date_to: formatDate(dateTo),
+        branch_id: branchId === 0 ? undefined : branchId, // Send undefined for 'All Branches' to skip filter
+    };
+
+    try {
+        switch (tab) {
+            case 'penjualan-harian': {
+                const [typeData, paymentData] = await Promise.all([
+                    api.getSalesByType({ ...params }),
+                    api.getSalesByChannel({ ...params })
+                ]);
+                return { typeData, paymentData };
+            }
+            case 'layanan':
+                return await api.getSalesItem({ ...params });
+            case 'faktur':
+                return await api.getTransactions({ ...params, status: ['paid', 'unpaid', 'partial'] }); // Assuming getTransactions exists or needed
+            case 'voucher':
+                return await api.getVoucherUsage({ ...params });
+            case 'laci-kas':
+                return []; // Placeholder until API ready
+            case 'kas-masuk-keluar':
+                return await api.getExpenses({ ...params });
+            default:
+                return null;
+        }
+    } catch (error) {
+        console.error("Error fetching report data:", error);
+        return null;
+    }
+};
+
+export default function SalesPage() {
+    const [activeTab, setActiveTab] = useState<SalesTab>('penjualan-harian');
+    const [branchList, setBranchList] = useState<Branch[]>([]);
+    const { selectedBranchId, setSelectedBranchId } = useBranchSync(() => setCurrentPage(1), 0);
+    const [loadingBranches, setLoadingBranches] = useState(true);
+    const [showBranchDropdown, setShowBranchDropdown] = useState(false);
+    const [branchSearchTerm, setBranchSearchTerm] = useState('');
+
+    // Date filter states
+    const [startDate, setStartDate] = useState<Date>(() => {
+        const { start } = getInitialDateRange('7_days');
+        return start;
+    });
+    const [endDate, setEndDate] = useState<Date>(new Date());
+    const [selectedQuickOption, setSelectedQuickOption] = useState('7_days');
+    const [isDateModalOpen, setIsDateModalOpen] = useState(false);
+    const [dateType, setDateType] = useState<'invoice' | 'payment'>('invoice');
+    const [backdateFilter, setBackdateFilter] = useState<'all' | 'backdate' | 'normal'>('all');
+
+    // Pagination states
+    const [currentPage, setCurrentPage] = useState(1);
+    const [itemsPerPage, setItemsPerPage] = useState(10);
+
+    // Reset pagination when tab changes
+    useEffect(() => {
+        setCurrentPage(1);
+    }, [activeTab]);
+
+    // Helper to get current page data
+    const getPaginatedData = (data: any[]) => {
+        const startIndex = (currentPage - 1) * itemsPerPage;
+        return data.slice(startIndex, startIndex + itemsPerPage);
+    };
+
+    useEffect(() => {
+        const loadBranches = async () => {
+            try {
+                setLoadingBranches(true);
+                const branches = await api.getBranches();
+                // Add "Semua Cabang" option
+                const allBranchesOption = { id: 0, name: 'Semua Cabang', address: 'Lihat data semua cabang' } as Branch;
+                setBranchList([allBranchesOption, ...branches]);
+            } catch (err) { console.error('Error loading branches:', err); }
+            finally { setLoadingBranches(false); }
+        };
+        loadBranches();
+    }, []);
